@@ -2,11 +2,31 @@ import torch
 import torch.nn.functional as F
 import math
 
+
 class KANConv2d(torch.nn.Module):
     """
     2D convolution over an input of shape (batch x channel x H x W)
     """
-    def __init__(self, in_channels, out_channels, kernel_size, stride=1, dilation=1, padding=0, bias=True):
+
+    def __init__(
+        self,
+        in_channels,
+        out_channels,
+        kernel_size,
+        stride=1,
+        dilation=1,
+        padding=0,
+        bias=True,
+        grid_size=5,
+        spline_order=3,
+        scale_noise=0.1,
+        scale_base=1.0,
+        scale_spline=1.0,
+        enable_standalone_scale_spline=True,
+        base_activation=torch.nn.SiLU,
+        grid_eps=0.02,
+        grid_range=[-1, 1],
+    ):
         super().__init__()
         self.in_channels = in_channels
         self.out_channels = out_channels
@@ -33,30 +53,57 @@ class KANConv2d(torch.nn.Module):
         else:
             self.dilation = dilation
 
-        self.linearized_kernel = KANLinear(self.kernel_size[0] * self.kernel_size[1]*self.in_channels, self.out_channels)
-        
-        self.unfold = torch.nn.Unfold(kernel_size=(self.kernel_size[0], self.kernel_size[1]), dilation=dilation, padding=padding, stride=stride)
+        self.linearized_kernel = KANLinear(
+            self.kernel_size[0] * self.kernel_size[1] * self.in_channels,
+            self.out_channels,
+            grid_size=grid_size,
+            spline_order=spline_order,
+            scale_noise=scale_noise,
+            scale_base=scale_base,
+            scale_spline=scale_spline,
+            base_activation=base_activation,
+            grid_eps=grid_eps,
+            grid_range=grid_range,
+        )
+
+        self.unfold = torch.nn.Unfold(
+            kernel_size=(self.kernel_size[0], self.kernel_size[1]),
+            dilation=dilation,
+            padding=padding,
+            stride=stride,
+        )
 
     def forward(self, x):
 
         bsz = x.shape[0]
         h, w = x.shape[2:4]
-        h_out = math.floor((h + 2*self.padding[0] - self.dilation[0]*(self.kernel_size[0] - 1) - 1)/self.stride[0] + 1)
-        w_out = math.floor((w + 2*self.padding[1] - self.dilation[1]*(self.kernel_size[1] - 1) - 1)/self.stride[1] + 1)
+        h_out = math.floor(
+            (h + 2 * self.padding[0] - self.dilation[0] * (self.kernel_size[0] - 1) - 1)
+            / self.stride[0]
+            + 1
+        )
+        w_out = math.floor(
+            (w + 2 * self.padding[1] - self.dilation[1] * (self.kernel_size[1] - 1) - 1)
+            / self.stride[1]
+            + 1
+        )
 
-        patches = self.unfold(x)  
-        
+        patches = self.unfold(x)
+
         # print(patches.shape)
-        patches = patches.view(-1, self.kernel_size[0] * self.kernel_size[1]*self.in_channels)
+        patches = patches.view(
+            -1, self.kernel_size[0] * self.kernel_size[1] * self.in_channels
+        )
 
         # perform the matrix multiplication
         patches = self.linearized_kernel(patches)
-        
+
         patches = patches.view(bsz, self.out_channels, h_out, w_out)
-        #patches = torch.nn.functional.fold(patches, (h_out, w_out), (1, 1))
+        # patches = torch.nn.functional.fold(patches, (h_out, w_out), (1, 1))
 
         # return in the expected shape
         return patches
+
 
 class KANLinear(torch.nn.Module):
     def __init__(
