@@ -147,9 +147,9 @@ def main():
             x = self.fc3(x)
             return x
 
-
+    device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     net = LeKan()
-
+    net.to(device)
     ########################################################################
     # 3. Define a Loss function and optimizer
     # ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -175,7 +175,7 @@ def main():
             for i, data in enumerate(pbar, 0):
                 # get the inputs; data is a list of [inputs, labels]
                 inputs, labels = data
-
+                inputs, labels = inputs.to(device), labels.to(device)
                 # zero the parameter gradients
                 optimizer.zero_grad()
 
@@ -227,9 +227,10 @@ def main():
     # Next, let's load back in our saved model (note: saving and re-loading the model
     # wasn't necessary here, we only did it to illustrate how to do so):
 
-    net = Net()
+    net = LeKan()
     net.load_state_dict(torch.load(PATH))
 
+    net.cuda()
     ########################################################################
     # Okay, now let us see what the neural network thinks these examples above are:
 
