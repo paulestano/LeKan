@@ -2,6 +2,61 @@ import torch
 import torch.nn.functional as F
 import math
 
+class KANConv2d(torch.nn.Module):
+    """
+    2D convolution over an input of shape (batch x channel x H x W)
+    """
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1, dilation=1, padding=0, bias=True):
+        super().__init__()
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.kernel_size = kernel_size
+        self.padding = padding
+
+        if isinstance(stride, int):
+            self.stride = (stride, stride)
+        else:
+            self.stride = stride
+
+        if isinstance(kernel_size, int):
+            self.kernel_size = (kernel_size, kernel_size)
+        else:
+            self.kernel_size = kernel_size
+
+        if isinstance(padding, int):
+            self.padding = (padding, padding)
+        else:
+            self.padding = padding
+
+        if isinstance(dilation, int):
+            self.dilation = (dilation, dilation)
+        else:
+            self.dilation = dilation
+
+        self.linearized_kernel = KANLinear(self.kernel_size[0] * self.kernel_size[1]*self.in_channels, self.out_channels)
+        
+        self.unfold = torch.nn.Unfold(kernel_size=(self.kernel_size[0], self.kernel_size[1]), dilation=dilation, padding=padding, stride=stride)
+
+    def forward(self, x):
+
+        bsz = x.shape[0]
+        h, w = x.shape[2:4]
+        h_out = math.floor((h + 2*self.padding[0] - self.dilation[0]*(self.kernel_size[0] - 1) - 1)/self.stride[0] + 1)
+        w_out = math.floor((w + 2*self.padding[1] - self.dilation[1]*(self.kernel_size[1] - 1) - 1)/self.stride[1] + 1)
+
+        patches = self.unfold(x)  
+        
+        # print(patches.shape)
+        patches = patches.view(-1, self.kernel_size[0] * self.kernel_size[1]*self.in_channels)
+
+        # perform the matrix multiplication
+        patches = self.linearized_kernel(patches)
+        
+        patches = patches.view(bsz, self.out_channels, h_out, w_out)
+        #patches = torch.nn.functional.fold(patches, (h_out, w_out), (1, 1))
+
+        # return in the expected shape
+        return patches
 
 class KANLinear(torch.nn.Module):
     def __init__(
@@ -33,6 +88,7 @@ class KANLinear(torch.nn.Module):
             .expand(in_features, -1)
             .contiguous()
         )
+        print(grid.shape)
         self.register_buffer("grid", grid)
 
         self.base_weight = torch.nn.Parameter(torch.Tensor(out_features, in_features))
@@ -54,7 +110,9 @@ class KANLinear(torch.nn.Module):
         self.reset_parameters()
 
     def reset_parameters(self):
-        torch.nn.init.kaiming_uniform_(self.base_weight, a=math.sqrt(5) * self.scale_base)
+        torch.nn.init.kaiming_uniform_(
+            self.base_weight, a=math.sqrt(5) * self.scale_base
+        )
         with torch.no_grad():
             noise = (
                 (
@@ -73,7 +131,9 @@ class KANLinear(torch.nn.Module):
             )
             if self.enable_standalone_scale_spline:
                 # torch.nn.init.constant_(self.spline_scaler, self.scale_spline)
-                torch.nn.init.kaiming_uniform_(self.spline_scaler, a=math.sqrt(5) * self.scale_spline)
+                torch.nn.init.kaiming_uniform_(
+                    self.spline_scaler, a=math.sqrt(5) * self.scale_spline
+                )
 
     def b_splines(self, x: torch.Tensor):
         """
