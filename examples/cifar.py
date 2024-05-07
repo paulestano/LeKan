@@ -126,17 +126,18 @@ def main():
 
     import torch.nn as nn
     import torch.nn.functional as F
-
-
+    grid_size = 5
+    spline_order = 3
+    base_activation = torch.nn.SiLU
     class LeKan(nn.Module):
         def __init__(self):
             super().__init__()
-            self.conv1 = KANConv2d(3, 6, 5, spline_order=5)
+            self.conv1 = KANConv2d(3, 6, 5, spline_order=spline_order, grid_size=grid_size, base_activation=base_activation)
             self.pool = nn.MaxPool2d(2, 2)
-            self.conv2 = KANConv2d(6, 16, 5, spline_order=5)
-            self.fc1 = KANLinear(16 * 5 * 5, 120)
-            self.fc2 = KANLinear(120, 84)
-            self.fc3 = KANLinear(84, 10)
+            self.conv2 = KANConv2d(6, 16, 5, spline_order=spline_order, grid_size=grid_size, base_activation=base_activation)
+            self.fc1 = KANLinear(16 * 5 * 5, 120, spline_order=spline_order, grid_size=grid_size, base_activation=base_activation)
+            self.fc2 = KANLinear(120, 84, spline_order=spline_order, grid_size=grid_size, base_activation=base_activation)
+            self.fc3 = KANLinear(84, 10, spline_order=spline_order, grid_size=grid_size, base_activation=base_activation)
 
         def forward(self, x):
             x = self.pool(self.conv1(x))
@@ -146,7 +147,25 @@ def main():
             x = self.fc2(x)
             x = self.fc3(x)
             return x
-
+    class Net(nn.Module):
+        def __init__(self):
+            super(Net, self).__init__()
+            self.conv1 = nn.Conv2d(3, 6, 5)
+            self.pool = nn.MaxPool2d(2, 2)
+            self.conv2 = nn.Conv2d(6, 16, 5)
+            self.fc1 = nn.Linear(16 * 5 * 5, 120)
+            self.fc2 = nn.Linear(120, 84)
+            self.fc3 = nn.Linear(84, 10)
+        
+        def forward(self, x):
+            x = self.pool(F.relu(self.conv1(x)))
+            x = self.pool(F.relu(self.conv2(x)))
+            x = torch.flatten(x, 1)
+            x = F.relu(self.fc1(x))
+            x = F.relu(self.fc2(x))
+            x = self.fc3(x)
+            return x
+        
     device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
     net = LeKan()
     net.to(device)
@@ -159,7 +178,7 @@ def main():
 
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.AdamW(net.parameters(), lr=0.001, weight_decay=1e-4)
-
+    scheduler = optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.8)
     ########################################################################
     # 4. Train the network
     # ^^^^^^^^^^^^^^^^^^^^
@@ -167,8 +186,9 @@ def main():
     # This is when things start to get interesting.
     # We simply have to loop over our data iterator, and feed the inputs to the
     # network and optimize.
-
-    for epoch in range(2):  # loop over the dataset multiple times
+    correct = 0
+    total = 0
+    for epoch in range(10):  # loop over the dataset multiple times
 
         running_loss = 0.0
         with tqdm(trainloader) as pbar:
@@ -181,17 +201,41 @@ def main():
 
                 # forward + backward + optimize
                 outputs = net(inputs)
-                loss = criterion(outputs, labels)
+                
+                correct += (outputs.argmax(dim=1) == labels).sum().item()
+                total += labels.size(0)
+                accuracy = correct / total
+                l1_reg = 0
+                for param in net.parameters():
+                    if param.requires_grad:
+                        l1_reg += torch.norm(param, 1)
+
+                loss = criterion(outputs, labels) + 0 * l1_reg
                 loss.backward()
                 optimizer.step()
 
                 # print statistics
                 running_loss += loss.item()
-                pbar.set_postfix(loss=running_loss / (i + 1))
+
+                pbar.set_postfix(loss=running_loss / (i + 1), accuracy=accuracy)
                 # if i % 2000 == 1999:    # print every 2000 mini-batches
                 #     print(f'[{epoch + 1}, {i + 1:5d}] loss: {running_loss / 2000:.3f}')
                 #     running_loss = 0.0
 
+        # Validation
+        correct = 0
+        total = 0
+        with torch.no_grad():
+            for data in testloader:
+                images, labels = data
+                images, labels = images.to(device), labels.to(device)
+                outputs = net(images)
+                correct += (outputs.argmax(dim=1) == labels).sum().item()
+                total += labels.size(0)
+        accuracy = correct / total
+        print(f'Accuracy of the network on the 10000 test images: {100 * accuracy:.2f} %')
+        scheduler.step()
+        
     print('Finished Training')
 
     ########################################################################
